@@ -375,7 +375,7 @@ label.btn { cursor: pointer; text-align: center; }
     <section class="view" id="view-home" data-view="home">
       <div class="top">
         <div class="brand"><div class="crest">KK</div><div class="wordmark">KlereKas</div></div>
-        <button class="avatar-btn" aria-label="Profile">AD</button>
+        <button class="avatar-btn" id="avatar" aria-label="Profile and app version">AD</button>
       </div>
 
       <div class="greet">
@@ -479,6 +479,8 @@ label.btn { cursor: pointer; text-align: center; }
         <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
         <span>Photos are saved on this iPhone only. They are never uploaded, and they are not part of the app's public code.</span>
       </div>
+      <button class="btn ghost block" id="export">Export photos</button>
+      <div class="note" id="export-note" style="text-align:center">Saves a copy to your Photos or Files, named by angle (klerekas-b0.jpg and so on), so another app can import them.</div>
       <button class="link danger" id="wipe">Delete all photos</button>
     </section>
 
@@ -979,7 +981,8 @@ label.btn { cursor: pointer; text-align: center; }
   const saveKV = (k, v) => DB.put("kv", JSON.parse(JSON.stringify(v)), k).catch(warnStorage);
   const daysAgo = it => Math.max(0, Math.floor((Date.now() - (it.added || Date.now())) / DAY));
 
-  const photoURL = {};
+  const APP_VERSION = "1.1";
+  const photoURL = {}, photoBlob = {};
   async function boot() {
     const now = Date.now();
     items.forEach(i => { if (i.added == null) { i.added = now - i.ago * DAY; delete i.ago; } i.sample = true; });
@@ -999,7 +1002,7 @@ label.btn { cursor: pointer; text-align: center; }
       }
       for (const k of await DB.keys("photos")) {
         const rec = await DB.get("photos", k);
-        if (rec && rec.blob) photoURL[k] = URL.createObjectURL(rec.blob);
+        if (rec && rec.blob) { photoBlob[k] = rec.blob; photoURL[k] = URL.createObjectURL(rec.blob); }
       }
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     } catch (e) { storageOK = false; }
@@ -1109,6 +1112,7 @@ label.btn { cursor: pointer; text-align: center; }
     document.getElementById("run-head").textContent = nh === 0 ? "Start close-ups" : nh < 5 ? `Shoot the remaining ${5 - nh}` : "Retake all 5";
     document.getElementById("tips").open = nb + nh === 0;
     document.getElementById("wipe").hidden = nb + nh === 0;
+    document.getElementById("export").hidden = document.getElementById("export-note").hidden = nb + nh === 0;
   }
 
   // ---------- Saving photos ----------
@@ -1131,12 +1135,13 @@ label.btn { cursor: pointer; text-align: center; }
   async function savePhoto(id, blob) {
     if (photoURL[id]) URL.revokeObjectURL(photoURL[id]);
     photoURL[id] = URL.createObjectURL(blob);
+    photoBlob[id] = blob;
     try { await DB.put("photos", { blob, ts: Date.now() }, id); } catch (e) { warnStorage(); }
     afterPhotosChange();
   }
   async function deletePhoto(id) {
     if (photoURL[id]) URL.revokeObjectURL(photoURL[id]);
-    delete photoURL[id];
+    delete photoURL[id]; delete photoBlob[id];
     try { await DB.del("photos", id); } catch (e) { warnStorage(); }
     afterPhotosChange();
   }
@@ -1149,10 +1154,32 @@ label.btn { cursor: pointer; text-align: center; }
   async function wipePhotos(btn) {
     if (Date.now() - wipeArmed > 4000) { wipeArmed = Date.now(); btn.textContent = "Tap again to delete all 13"; setTimeout(() => btn.textContent = "Delete all photos", 4000); return; }
     wipeArmed = 0;
-    Object.keys(photoURL).forEach(k => { URL.revokeObjectURL(photoURL[k]); delete photoURL[k]; });
+    Object.keys(photoURL).forEach(k => { URL.revokeObjectURL(photoURL[k]); delete photoURL[k]; delete photoBlob[k]; });
     try { await DB.clear("photos"); } catch (e) { warnStorage(); }
     btn.textContent = "Delete all photos";
     afterPhotosChange(); toast("All photos deleted");
+  }
+
+  // Copies the photos out of the app's private storage via the iPhone share sheet
+  // (Save Images / Save to Files). Files are built from blobs already in memory so
+  // share() still runs inside the tap, which iOS requires.
+  async function exportPhotos() {
+    const files = BODY.concat(HEAD).filter(p => photoBlob[p.id])
+      .map(p => new File([photoBlob[p.id]], `klerekas-${p.id}.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
+    if (!files.length) { toast("No photos to export yet"); return; }
+    if (navigator.canShare && navigator.canShare({ files })) {
+      try { await navigator.share({ files, title: "KlereKas photos" }); }
+      catch (e) { if (e && e.name !== "AbortError") toast("Couldn't open the share sheet"); }
+      return;
+    }
+    // Fallback for browsers without file sharing: download one by one.
+    for (const f of files) {
+      const a = document.createElement("a"), url = URL.createObjectURL(f);
+      a.href = url; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      await wait(350);
+    }
+    toast(`${files.length} photos downloaded`);
   }
 
   // One angle: see the photo or the outline, then shoot, pick, or delete.
@@ -1349,6 +1376,8 @@ label.btn { cursor: pointer; text-align: center; }
     else if (t.id === "run-body") openCam(nextFirst(BODY), "auto");
     else if (t.id === "run-head") openCam(nextFirst(HEAD), "auto");
     else if (t.id === "wipe") wipePhotos(t);
+    else if (t.id === "export") exportPhotos();
+    else if (t.id === "avatar") toast("KlereKas version " + APP_VERSION);
   });
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;
